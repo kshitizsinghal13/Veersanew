@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telehealth Solution</title>
+  <!-- React and ReactDOM -->
+  <script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
+  <!-- Babel for JSX -->
+  <script src="https://unpkg.com/@babel/standalone@7.22.5/babel.min.js"></script>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Razorpay -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <!-- React Router -->
+  <script src="https://unpkg.com/react-router-dom@5.3.3/umd/react-router-dom.min.js"></script>
+  <!-- sql.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.min.js"></script>
+</head>
+<body>
+  <div id="root">Loading...</div>
+  <script type="text/babel">
+    // Debugging logs
+    console.log("React loaded:", typeof React !== "undefined");
+    console.log("ReactDOM loaded:", typeof ReactDOM !== "undefined");
+    console.log("Babel loaded:", typeof Babel !== "undefined");
+    console.log("ReactRouterDOM loaded:", typeof ReactRouterDOM !== "undefined");
+    console.log("Razorpay loaded:", typeof Razorpay !== "undefined");
+    console.log("sql.js loaded:", typeof initSqlJs !== "undefined");
+
+    const { BrowserRouter, Route, Switch, useHistory } = ReactRouterDOM;
+
+    // Initialize SQLite
+    let db;
+    async function initializeDatabase() {
+      try {
+        const SQL = await initSqlJs({
+          locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+        });
+        db = new SQL.Database();
+        // Create tables
+        db.run(`
+          CREATE TABLE IF NOT EXISTS users (
+            userId TEXT PRIMARY KEY,
+            email TEXT UNIQUE,
+            password TEXT,
+            name TEXT
+          );
+          CREATE TABLE IF NOT EXISTS availability (
+            doctorId INTEGER,
+            date TEXT,
+            slot TEXT,
+            status TEXT,
+            userId TEXT,
+            consultationId TEXT
+          );
+          CREATE TABLE IF NOT EXISTS payments (
+            paymentId TEXT PRIMARY KEY,
+            userId TEXT,
+            doctorId INTEGER,
+            slot TEXT,
+            status TEXT,
+            timestamp TEXT,
+            consultationId TEXT
+          );
+          CREATE TABLE IF NOT EXISTS consultations (
+            consultationId TEXT PRIMARY KEY,
+            userId TEXT,
+            doctorId INTEGER,
+            doctorName TEXT,
+            slot TEXT
+          );
+        `);
+        console.log("SQLite database initialized");
+      } catch (error) {
+        console.error("Error initializing SQLite:", error);
+      }
+    }
+    initializeDatabase();
+
+    // Generate a simple UUID
+    function generateUUID() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
+
+    // Hardcoded list of doctors by specialty
+    const doctorsBySpecialty = {
+      General: [
+        { id: 1, name: "Dr. Anil Sharma", location: "Delhi" },
+        { id: 2, name: "Dr. Priya Gupta", location: "Mumbai" }
+      ],
+      Cardiology: [
+        { id: 3, name: "Dr. Rajesh Verma", location: "Bangalore" },
+        { id: 4, name: "Dr. Sunita Patel", location: "Chennai" }
+      ],
+      Pediatrics: [
+        { id: 5, name: "Dr. Vikram Singh", location: "Kolkata" },
+        { id: 6, name: "Dr. Neha Reddy", location: "Hyderabad" }
+      ]
+    };
+
+    // Mock doctor availability
+    function initializeAvailability() {
+      const today = new Date().toISOString().split('T')[0];
+      const defaultAvailability = [
+        { doctorId: 1, date: today, slot: "3:00-3:20 PM", status: "available" },
+        { doctorId: 1, date: today, slot: "3:20-3:40 PM", status: "available" },
+        { doctorId: 1, date: today, slot: "3:40-4:00 PM", status: "available" },
+        { doctorId: 2, date: today, slot: "4:00-4:20 PM", status: "available" },
+        { doctorId: 2, date: today, slot: "4:20-4:40 PM", status: "available" },
+        { doctorId: 3, date: today, slot: "2:00-2:20 PM", status: "available" },
+        { doctorId: 3, date: today, slot: "2:20-2:40 PM", status: "available" },
+        { doctorId: 4, date: today, slot: "3:00-3:20 PM", status: "available" },
+        { doctorId: 4, date: today, slot: "3:20-3:40 PM", status: "available" },
+        { doctorId: 5, date: today, slot: "5:00-5:20 PM", status: "available" },
+        { doctorId: 5, date: today, slot: "5:20-5:40 PM", status: "available" },
+        { doctorId: 6, date: today, slot: "6:00-6:20 PM", status: "available" },
+        { doctorId: 6, date: today, slot: "6:20-6:40 PM", status: "available" }
+      ];
+      const count = db.exec("SELECT COUNT(*) AS count FROM availability")[0].values[0][0];
+      if (count === 0) {
+        defaultAvailability.forEach(({ doctorId, date, slot, status }) => {
+          db.run(
+            "INSERT INTO availability (doctorId, date, slot, status) VALUES (?, ?, ?, ?)",
+            [doctorId, date, slot, status]
+          );
+        });
+        console.log("Default availability initialized in SQLite");
+      }
+    }
+
+    // Error Boundary Component
+    class ErrorBoundary extends React.Component {
+      state = { hasError: false, error: null };
+      static getDerivedStateFromError(error) {
+        console.error("ErrorBoundary caught:", error);
+        return { hasError: true, error };
+      }
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="text-center text-red-600 p-6">
+              <h1>Something went wrong!</h1>
+              <p>Check Console for details.</p>
+              <p>Error: {this.state.error?.message}</p>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    // Login Page Component
+    function LoginPage({ setLoggedInUser }) {
+      const [isRegister, setIsRegister] = React.useState(false);
+      const [formData, setFormData] = React.useState({
+        email: '',
+        password: '',
+        name: ''
+      });
+      const [errors, setErrors] = React.useState({});
+
+      const validateForm = () => {
+        const newErrors = {};
+        if (!formData.email.match(/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/)) {
+          newErrors.email = "Invalid email format";
+        }
+        if (formData.password.length < 6) {
+          newErrors.password = "Password must be at least 6 characters";
+        }
+        if (isRegister && !formData.name) {
+          newErrors.name = "Name is required";
+        }
+        setErrors(newErrors);
+        return Object.keys(newErrors).length === 0;
+      };
+
+      const handleInputChange = (e) => {
+        setFormData({ ...formData, [e.target.name]: e.target.value });
+      };
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!validateForm()) return;
+
+        try {
+          if (isRegister) {
+            // Register
+            const existingUser = db.exec(
+              "SELECT userId FROM users WHERE email = ?",
+              [formData.email]
+            );
+            if (existingUser.length > 0) {
+              setErrors({ email: "Email already registered" });
+              return;
+            }
+            const userId = generateUUID();
+            db.run(
+              "INSERT INTO users (userId, email, password, name) VALUES (?, ?, ?, ?)",
+              [userId, formData.email, formData.password, formData.name]
+            );
+            console.log("User registered:", formData.email);
+            alert("Registration successful! Please sign in.");
+            setIsRegister(false);
+            setFormData({ email: '', password: '', name: '' });
+          } else {
+            // Sign In
+            const result = db.exec(
+              "SELECT userId, name FROM users WHERE email = ? AND password = ?",
+              [formData.email, formData.password]
+            );
+            if (result.length === 0) {
+              setErrors({ general: "Invalid email or password" });
+              return;
+            }
+            const user = { userId: result[0].values[0][0], name: result[0].values[0][1] };
+            console.log("User signed in:", user);
+            setLoggedInUser(user);
+            setFormData({ email: '', password: '', name: '' });
+          }
+        } catch (error) {
+          console.error("Error during authentication:", error);
+          setErrors({ general: "Authentication error" });
+        }
+      };
+
+      return (
+        <div className="min-h-screen bg-gray-100 flex items-center justify-center p-6">
+          <div className="max-w-md w-full bg-white p-6 rounded-lg shadow-md">
+            <h1 className="text-2xl font-bold mb-4">{isRegister ? "Register" : "Sign In"}</h1>
+            <form onSubmit={handleSubmit}>
+              {isRegister && (
+                <div className="mb-4">
+                  <label className="block text-gray-700">Name</label>
+                  <input
+                    type="text"
+                    name="name"
+                    value={formData.name}
+                    onChange={handleInputChange}
+                    className="w-full p-2 border rounded"
+                  />
+                  {errors.name && <p className="text-red-500 text-sm">{errors.name}</p>}
+                </div>
+              )}
+              <div className="mb-4">
+                <label className="block text-gray-700">Email</label>
+                <input
+                  type="email"
+                  name="email"
+                  value={formData.email}
+                  onChange={handleInputChange}
+                  className="w-full p-2 border rounded"
+                  required
+                />
+                {errors.email && <p className="text-red-500 text-sm">{errors.email}</p>}
+              </div>
+              <div className="mb-4">
+                <label className="block text-gray-700">Password</label>
+                <input
+                  type="password"
+                  name="password"
+                  value={formData.password}
+                  onChange={handleInputChange}
+                  className="w-full p-2 border rounded"
+                  required
+                />
+                {errors.password && <p className="text-red-500 text-sm">{errors.password}</p>}
+              </div>
+              {errors.general && <p className="text-red-500 text-sm mb-4">{errors.general}</p>}
+              <button
+                type="submit"
+                className="w-full bg-blue-500 text-white p-2 rounded hover:bg-blue-600"
+              >
+                {isRegister ? "Register" : "Sign In"}
+              </button>
+            </form>
+            <button
+              onClick={() => {
+                setIsRegister(!isRegister);
+                setErrors({});
+                setFormData({ email: '', password: '', name: '' });
+              }}
+              className="w-full text-blue-500 mt-4 hover:underline"
+            >
+              {isRegister ? "Already have an account? Sign In" : "Need an account? Register"}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Video Consultation Page
+    function VideoConsultation({ loggedInUser }) {
+      const history = useHistory();
+      const consultation = db.exec(
+        "SELECT * FROM consultations WHERE userId = ? ORDER BY consultationId DESC LIMIT 1",
+        [loggedInUser.userId]
+      )[0]?.values[0] || {};
+      console.log("VC Page - Consultation:", consultation);
+
+      return (
+        <div className="min-h-screen bg-gray-100 p-6">
+          <h1 className="text-3xl font-bold text-center mb-8">Video Consultation</h1>
+          <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow-md">
+            <h2 className="text-2xl font-semibold mb-4">Consultation with {consultation[3] || "Doctor"}</h2>
+            <p className="mb-4">Time Slot: {consultation[4] || "N/A"}</p>
+            <p className="mb-4">Consultation ID: {consultation[0] || "N/A"}</p>
+            <div className="bg-gray-200 h-64 flex items-center justify-center mb-4">
+              <p className="text-gray-600">Video Feed Placeholder (WebRTC Integration Here)</p>
+            </div>
+            <button
+              onClick={() => history.push('/')}
+              className="w-full bg-blue-500 text-white p-2 rounded hover:bg-blue-600"
+            >
+              End Consultation
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Telehealth App Component
+    function TelehealthApp({ loggedInUser }) {
+      const history = useHistory();
+      const [userDetails, setUserDetails] = React.useState({
+        name: loggedInUser?.name || '',
+        email: ''
+      });
+      const [specialty, setSpecialty] = React.useState('');
+      const [selectedDoctors, setSelectedDoctors] = React.useState([]);
+      const [selectedDoctor, setSelectedDoctor] = React.useState(null);
+      const [selectedSlot, setSelectedSlot] = React.useState('');
+      const [showSlots, setShowSlots] = React.useState(false);
+      console.log("TelehealthApp rendered - Specialty:", specialty, "LoggedInUser:", loggedInUser);
+
+      // Initialize availability
+      React.useEffect(() => {
+        initializeAvailability();
+      }, []);
+
+      // Handle user details input changes
+      const handleInputChange = (e) => {
+        setUserDetails({ ...userDetails, [e.target.name]: e.target.value });
+      };
+
+      // Submit user details to SQLite
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        try {
+          db.run(
+            "UPDATE users SET name = ?, email = ? WHERE userId = ?",
+            [userDetails.name, userDetails.email, loggedInUser.userId]
+          );
+          loggedInUser.name = userDetails.name;
+          alert("User details updated successfully!");
+          setUserDetails({ ...userDetails, email: '' });
+        } catch (error) {
+          console.error("Error updating user details:", error);
+          alert("Error updating details.");
+        }
+      };
+
+      // Handle specialty selection
+      const handleSpecialtyChange = (e) => {
+        const selectedSpecialty = e.target.value;
+        setSpecialty(selectedSpecialty);
+        setSelectedDoctors(doctorsBySpecialty[selectedSpecialty] || []);
+        setShowSlots(false);
+        setSelectedDoctor(null);
+        setSelectedSlot('');
+      };
+
+      // Handle book button click (show slots)
+      const handleBookClick = (doctor) => {
+        console.log("Showing slots for doctor:", doctor.name);
+        setSelectedDoctor(doctor);
+        setShowSlots(true);
+        setSelectedSlot('');
+      };
+
+      // Get available slots for a doctor
+      const getAvailableSlots = (doctorId) => {
+        const today = new Date().toISOString().split('T')[0];
+        const result = db.exec(
+          "SELECT slot FROM availability WHERE doctorId = ? AND date = ? AND status = 'available'",
+          [doctorId, today]
+        );
+        return result[0]?.values.map(row => row[0]) || [];
+      };
+
+      // Handle slot selection
+      const handleSlotChange = (e) => {
+        setSelectedSlot(e.target.value);
+      };
+
+      // Handle payment with Razorpay
+      const handleConfirmBooking = () => {
+        if (!selectedSlot) {
+          alert("Please select a time slot.");
+          return;
+        }
+        console.log("Initiating payment for doctor:", selectedDoctor.name, "Slot:", selectedSlot);
+        console.log("In TEST MODE: Use UPI ID 'success@razorpay' for successful payment or 'failure@razorpay' for failed payment");
+        const consultationId = generateUUID();
+        const options = {
+          key: "rzp_test_vua6AZFNRS74BH",
+          amount: 100,
+          currency: "INR",
+          name: "Telehealth Consultation",
+          description: `Consultation with ${selectedDoctor.name} at ${selectedSlot}`,
+          methods: {
+            upi: true,
+            card: true,
+            netbanking: true,
+            wallet: true
+          },
+          handler: function (response) {
+            try {
+              // Save payment
+              db.run(
+                "INSERT INTO payments (paymentId, userId, doctorId, slot, status, timestamp, consultationId) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [response.razorpay_payment_id, loggedInUser.userId, selectedDoctor.id, selectedSlot, 'completed', new Date().toISOString(), consultationId]
+              );
+              // Save consultation
+              db.run(
+                "INSERT INTO consultations (consultationId, userId, doctorId, doctorName, slot) VALUES (?, ?, ?, ?, ?)",
+                [consultationId, loggedInUser.userId, selectedDoctor.id, selectedDoctor.name, selectedSlot]
+              );
+              // Mark slot as booked
+              db.run(
+                "UPDATE availability SET status = ?, userId = ?, consultationId = ? WHERE doctorId = ? AND date = ? AND slot = ?",
+                ['booked', loggedInUser.userId, consultationId, selectedDoctor.id, new Date().toISOString().split('T')[0], selectedSlot]
+              );
+              alert("Payment successful! Redirecting to video consultation...");
+              setShowSlots(false);
+              setSelectedDoctor(null);
+              setSelectedSlot('');
+              history.push('/vc');
+            } catch (error) {
+              console.error("Error processing payment:", error);
+              alert("Error saving payment.");
+            }
+          },
+          prefill: {
+            name: userDetails.name || "User",
+            email: userDetails.email || "user@example.com"
+          },
+          theme: {
+            color: "#3399cc"
+          }
+        };
+        try {
+          const rzp = new window.Razorpay(options);
+          console.log("Razorpay initialized");
+          rzp.on('payment.failed', function (response) {
+            console.error("Payment failed:", response.error);
+            alert("Payment failed: " + response.error.description);
+          });
+          rzp.open();
+        } catch (error) {
+          console.error("Razorpay error:", error);
+          alert("Error initiating payment.");
+        }
+      };
+
+      // Handle cancellation
+      const handleCancelBooking = (consultationId, doctorId, slot) => {
+        if (window.confirm("Are you sure you want to cancel this booking?")) {
+          try {
+            const today = new Date().toISOString().split('T')[0];
+            // Update availability
+            db.run(
+              "UPDATE availability SET status = ?, userId = NULL, consultationId = NULL WHERE doctorId = ? AND date = ? AND slot = ? AND consultationId = ?",
+              ['available', doctorId, today, slot, consultationId]
+            );
+            // Update payment
+            db.run(
+              "UPDATE payments SET status = ? WHERE consultationId = ?",
+              ['cancelled', consultationId]
+            );
+            // Delete consultation
+            db.run(
+              "DELETE FROM consultations WHERE consultationId = ?",
+              [consultationId]
+            );
+            console.log("Booking cancelled:", { consultationId, doctorId, slot });
+            alert("Booking cancelled successfully!");
+          } catch (error) {
+            console.error("Error cancelling booking:", error);
+            alert("Error cancelling booking.");
+          }
+        }
+      };
+
+      // Get user’s bookings
+      const getUserBookings = () => {
+        const result = db.exec(
+          "SELECT p.paymentId, p.doctorId, p.slot, p.status, p.consultationId, c.doctorName FROM payments p LEFT JOIN consultations c ON p.consultationId = c.consultationId WHERE p.userId = ? AND p.status = 'completed'",
+          [loggedInUser.userId]
+        );
+        return result[0]?.values.map(row => ({
+          paymentId: row[0],
+          doctorId: row[1],
+          slot: row[2],
+          status: row[3],
+          consultationId: row[4],
+          doctorName: row[5]
+        })) || [];
+      };
+
+      return (
+        <div className="min-h-screen bg-gray-100 p-6">
+          <h1 className="text-3xl font-bold text-center mb-8">Telehealth Solution - Veersa Hackathon 2026</h1>
+
+          {/* User Details Form */}
+          <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow-md mb-8">
+            <h2 className="text-2xl font-semibold mb-4">User Details</h2>
+            <form onSubmit={handleSubmit}>
+              <div className="mb-4">
+                <label className="block text-gray-700">Name</label>
+                <input
+                  type="text"
+                  name="name"
+                  value={userDetails.name}
+                  onChange={handleInputChange}
+                  className="w-full p-2 border rounded"
+                  required
+                />
+              </div>
+              <div className="mb-4">
+                <label className="block text-gray-700">Email</label>
+                <input
+                  type="email"
+                  name="email"
+                  value={userDetails.email}
+                  onChange={handleInputChange}
+                  className="w-full p-2 border rounded"
+                  required
+                />
+              </div>
+              <button type="submit" className="w-full bg-blue-500 text-white p-2 rounded hover:bg-blue-600">
+                Update
+              </button>
+            </form>
+          </div>
+
+          {/* Specialty Selection */}
+          <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow-md mb-8">
+            <h2 className="text-2xl font-semibold mb-4">Select Doctor Specialty</h2>
+            <select
+              value={specialty}
+              onChange={handleSpecialtyChange}
+              className="w-full p-2 border rounded"
+            >
+              <option value="">Select Specialty</option>
+              <option value="General">General Medicine</option>
+              <option value="Cardiology">Cardiology</option>
+              <option value="Pediatrics">Pediatrics</option>
+            </select>
+          </div>
+
+          {/* Doctor List */}
+          {selectedDoctors.length > 0 && (
+            <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow-md mb-8">
+              <h2 className="text-2xl font-semibold mb-4">Available Doctors</h2>
+              <ul className="space-y-2">
+                {selectedDoctors.map((doctor) => (
+                  <li key={doctor.id} className="p-2 border rounded flex justify-between items-center">
+                    <div>
+                      <span className="font-bold">{doctor.name}</span> - {doctor.location}
+                    </div>
+                    <button
+                      onClick={() => handleBookClick(doctor)}
+                      className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
+
+
+                    >
+                      Book
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Time Slot Selection */}
+          {showSlots && selectedDoctor && (
+            <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow-md mb-8">
+              <h2 className="text-2xl font-semibold mb-4">Select Time Slot for {selectedDoctor.name}</h2>
+              <select
+                value={selectedSlot}
+                onChange={handleSlotChange}
+                className="w-full p-2 border rounded mb-4"
+              >
+                <option value="">Select Time Slot</option>
+                {getAvailableSlots(selectedDoctor.id).map((slot, index) => (
+                  <option key={index} value={slot}>{slot}</option>
+                ))}
+              </select>
+              <button
+                onClick={handleConfirmBooking}
+                className="w-full bg-blue-500 text-white p-2 rounded hover:bg-blue-600"
+              >
+                Confirm Booking
+              </button>
+              <button
+                onClick={() => setShowSlots(false)}
+                className="w-full bg-gray-500 text-white p-2 rounded hover:bg-gray-600 mt-2"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {/* User Bookings */}
+          {getUserBookings().length > 0 && (
+            <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow-md">
+              <h2 className="text-2xl font-semibold mb-4">Your Bookings</h2>
+              <ul className="space-y-2">
+                {getUserBookings().map((booking, index) => (
+                  <li key={index} className="p-2 border rounded flex justify-between items-center">
+                    <div>
+                      <span className="font-bold">{booking.doctorName}</span> - {booking.slot}
+                    </div>
+                    <button
+                      onClick={() => handleCancelBooking(booking.consultationId, booking.doctorId, booking.slot)}
+                      className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
+                    >
+                      Cancel
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Main App Component
+    function App() {
+      const [loggedInUser, setLoggedInUser] = React.useState(null);
+
+      return (
+        <BrowserRouter>
+          <Switch>
+            <Route exact path="/" render={() => (
+              loggedInUser ? <TelehealthApp loggedInUser={loggedInUser} /> : <LoginPage setLoggedInUser={setLoggedInUser} />
+            )} />
+            <Route path="/vc" render={() => (
+              loggedInUser ? <VideoConsultation loggedInUser={loggedInUser} /> : <LoginPage setLoggedInUser={setLoggedInUser} />
+            )} />
+          </Switch>
+        </BrowserRouter>
+      );
+    }
+
+    // Render the app
+    console.log("Attempting to render app...");
+    try {
+      ReactDOM.render(
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>,
+        document.getElementById("root")
+      );
+      console.log("App rendered successfully");
+    } catch (error) {
+      console.error("Render error:", error);
+      document.getElementById("root").innerHTML = `
+        <div class="text-center text-red-600 p-6">
+          <h1>Failed to render app</h1>
+          <p>Check Console for details</p>
+          <p>Error: ${error.message}</p>
+        </div>
+      `;
+    }
+
+    // Function to download SQLite database
+    function downloadDatabase() {
+      const data = db.export();
+      const blob = new Blob([data]);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'telehealth.sqlite';
+      link.click();
+    }
+  </script>
+</body>
+</html>
